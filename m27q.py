@@ -3,14 +3,49 @@
 # Based on: https://gist.github.com/wadimw/4ac972d07ed1f3b6f22a101375ecac41
 
 
+import sys
+import typing as t
+from dataclasses import dataclass
+from time import sleep
 import usb.core
 import usb.util
-from time import sleep
-import typing as t
-import sys
+
+
+@dataclass
+class BasicProperty:
+    minimum: int
+    maximum: int
+    message_a: int
+    message_b: int = 0
+
+    def clamp(self, v: int):
+        return max(self.minimum, min(self.maximum, v))
+
+
+@dataclass
+class EnumProperty:
+    allowed: t.List[int]
+    message_a: int
+    message_b: int = 0
+
+    def clamp(self, v: int):
+        if v not in self.allowed:
+            raise Exception(f"Only allowed values: {self.allowed}")
+        return v
+
+
+Property = t.Union[BasicProperty, EnumProperty]
 
 
 class MonitorControl:
+    BRIGHTNESS = BasicProperty(0, 100, 0x10, 0x00)
+    CONTRAST = BasicProperty(0, 100, 0x12, 0x00)
+    SHARPNESS = BasicProperty(0, 100, 0x87, 0x00)
+    BLUE_LIGHT_REDUCTION = BasicProperty(0, 10, 0xe0, 0x0b)
+    KVM_STATUS = BasicProperty(0, 1, 0xe0, 0x69)
+    BLACK_EQUALIZER = BasicProperty(0, 10, 0xe0, 0x02)
+    OSD_TIMEOUT = EnumProperty([5, 10, 15, 20, 25, 30], 0xe0, 0x30)
+
     def __init__(self):
         self._VID = 0x2109  # (VIA Labs, Inc.)
         self._PID = 0x8883  # USB Billboard Device
@@ -75,44 +110,53 @@ class MonitorControl:
             message=bytearray([0x6E, 0x51, 0x81 + len(data), 0x03] + data),
         )
 
-    def set_brightness(self, brightness: int):
-        self.set_osd(
-            [
-                0x10,
-                0x00,
-                max(self._min_brightness, min(self._max_brightness, brightness)),
-            ]
-        )
+    def set_property(self, property: Property, value: int):
+        self.set_osd([property.message_a, property.message_b, property.clamp(value)])
 
-    def get_brightness(self):
-        return self.get_osd([0x10])
+    def get_property(self, property: Property):
+        return self.get_osd([property.message_a, property.message_b])
 
-    def transition_brightness(self, to_brightness: int, step: int = 3):
-        current_brightness = self.get_brightness()
-        diff = abs(to_brightness - current_brightness)
-        if current_brightness <= to_brightness:
+    def transition_property(self, property: BasicProperty, target: int, step: int = 3):
+        current = self.get_property(property)
+        diff = abs(target - current)
+        if current <= target:
             step = 1 * step  # increase
         else:
             step = -1 * step  # decrease
         while diff >= abs(step):
-            current_brightness += step
-            self.set_brightness(current_brightness)
+            current += step
+            self.set_property(property, current)
             diff -= abs(step)
         # Set one last time
-        if current_brightness != to_brightness:
-            self.set_brightness(to_brightness)
+        if current != target:
+            self.set_property(property, target)
+
+    def set_brightness(self, brightness: int):
+        self.set_property(MonitorControl.BRIGHTNESS, brightness)
+
+    def get_brightness(self):
+        return self.get_property(MonitorControl.BRIGHTNESS)
+
+    def transition_brightness(self, to_brightness: int, step: int = 3):
+        self.transition_property(MonitorControl.BRIGHTNESS, to_brightness, step)
 
     def set_volume(self, volume: int):
-        return self.set_osd([0x62, 0x00, volume])
+        self.set_property(MonitorControl.VOLUME, volume)
 
     def get_volume(self):
-        return self.get_osd([0x62])
+        return self.get_property(MonitorControl.VOLUME)
+
+    def set_contrast(self, contrast: int):
+        self.set_property(MonitorControl.CONTRAST, contrast)
+
+    def get_contrast(self):
+        return self.get_property(MonitorControl.CONTRAST)
 
     def get_kvm_status(self):
-        return self.get_osd([224, 105])
+        return self.get_property(MonitorControl.KVM_STATUS)
 
     def set_kvm_status(self, status):
-        self.set_osd([224, 105, status])
+        self.set_property(MonitorControl.KVM_STATUS, status)
 
     def toggle_kvm(self):
         self.set_kvm_status(1 - self.get_kvm_status())
